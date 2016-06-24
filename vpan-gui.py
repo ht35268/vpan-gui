@@ -7,6 +7,9 @@ import http.client
 import urllib
 import urllib.request
 
+import socket
+socket.setdefaulttimeout(6)
+
 import time
 import datetime
 
@@ -19,6 +22,7 @@ import os.path
 opt_cookie = ""
 opt_max_thr_count = 10
 opt_max_thr_view_count = 96
+opt_retry_delay_second = 10
 opt_monitor_clipboard = False
 
 """
@@ -33,10 +37,15 @@ def chomp(str_data_old):
     return str_data;
 
 def get_http_data(def_server, def_path):
-    conn = http.client.HTTPConnection(def_server)
-    conn.request("GET", def_path, headers = {"Cookie" : opt_cookie})
-    response = conn.getresponse()
-    str_data = response.read()  # This will return entire content.
+    try:
+        conn = http.client.HTTPConnection(def_server)
+        conn.request("GET", def_path, headers = {"Cookie" : opt_cookie})
+        response = conn.getresponse()
+        str_data = response.read()  # This will return entire content.
+    except OSError:
+        raise RuntimeError
+    except socket.gaierror:
+        raise RuntimeError
     return str_data
 
 def get_http_data_by_link(def_path):
@@ -70,7 +79,10 @@ def file_exist(path):
     return doSomething
 
 def DownloadFile(url, web_path, tofile, origsize):
-    f = urllib.request.urlopen(url)
+    try:
+        f = urllib.request.urlopen(url)
+    except socket.timeout:
+        raise RuntimeError
     # tofile = resolve_filename_conflict(tofile)
     doSomething = False
     if file_exist(tofile):
@@ -83,7 +95,12 @@ def DownloadFile(url, web_path, tofile, origsize):
     disp_item_modify(web_path, print_str)
     tm_begin = datetime.datetime.now()
     while True:
-        s = f.read(1024*32)
+        if sig_mainstop:
+            raise RuntimeError
+        try:
+            s = f.read(1024*32)
+        except socket.timeout:
+            raise RuntimeError
         if len(s) == 0:
                 break
         outf.write(s)
@@ -114,15 +131,11 @@ def vpan_get_file(web_path, html_data):
     down_size_list = re.findall("<span class=\"btn_vdisk_size\">(.*?)</span>", html_data)
     down_size_list.append("Unknown size")
     down_size = down_size_list[0]
-    try:
-        DownloadFile(down_path, web_path, disp_arr_name[web_path], down_size)
-    except urllib.error.HTTPError:
-        disp_item_modify(web_path, "Pending")
-        return False
+    DownloadFile(down_path, web_path, disp_arr_name[web_path], down_size)
     return True
 
 def vpan_get_dir(web_path, html_data):
-    n_data = re.sub("<tbody.*?>(.*?)</tbody>", "\\1", html_data)
+    n_data = re.sub("^(.*?)<tbody.*?>(.*?)</tbody>(.*)$", "\\2", html_data)
     sub_list_1 = re.findall("href=\"(http://vdisk\\.weibo\\.com/s/.*?)\"", n_data)
     sub_list = []
     for name in sub_list_1:
@@ -138,7 +151,12 @@ def vpan_get_dir(web_path, html_data):
 
 def vpan_get_item(web_path):
     disp_item_modify(web_path, "Getting file headers...")
-    html_data = get_http_data_by_link(web_path)
+    try:
+        html_data = get_http_data_by_link(web_path)
+    except RuntimeError:
+        disp_item_remove(web_path)
+        disp_item_modify(web_path, "Connection lost.")
+        return False
     html_data = html_data.decode("utf-8", "ignore")
     vpan_resolve_name(web_path, html_data)
     isDir = True
@@ -146,10 +164,17 @@ def vpan_get_item(web_path):
         isDir = False
     if len(re.findall("\\.([Rr][Aa][Rr]|[Zz][Ii][Pp])$", disp_arr_name[web_path])) > 0:
         isDir = False
-    if isDir:
-        vpan_get_dir(web_path, html_data)
-    else:
-        vpan_get_file(web_path, html_data)
+    if len(re.findall("vd_browser_music", html_data)) > 0:
+        isDir = False
+    try:
+        if isDir:
+            vpan_get_dir(web_path, html_data)
+        else:
+            vpan_get_file(web_path, html_data)
+    except RuntimeError:
+        disp_item_remove(web_path)
+        disp_item_modify(web_path, "Connection lost.")
+        return False
     disp_item_remove(web_path)
     return True
 
@@ -166,7 +191,12 @@ def vpan_resolve_name(web_path, html_data):
 
 def vpan_resolve_name_force(web_path):
     global disp_thr_view_count
-    html_data = get_http_data_by_link(web_path)
+    try:
+        html_data = get_http_data_by_link(web_path)
+    except RuntimeError:
+        disp_item_modify(web_path, "Connection lost.")
+        disp_thr_view_count -= 1
+        return False
     html_data = html_data.decode("utf-8", "ignore")
     vpan_resolve_name(web_path, html_data)
     # testing if exists
@@ -225,6 +255,20 @@ def disp_item_clear():
         for name in disp_arr_name:
             if disp_arr_stat[name] == "":
                 disp_list_remove.append(name)
+    except KeyError:
+        return True
+    return True
+
+def disp_item_reset():
+    global disp_arr_stat
+    global disp_arr_name
+    global disp_list_add
+    global disp_list_remove
+    global disp_thr_count
+    try:
+        for name in disp_arr_name:
+            if disp_arr_stat[name] == "Connection lost.":
+                disp_item_modify(name, "Pending")
     except KeyError:
         return True
     return True
@@ -290,9 +334,6 @@ def disp_thr_clipmon():
     strb = getText()
     strb.rstrip()
     strb = strb.decode("utf-8", "ignore")
-    if (strb == "terminate"):
-        disp_thr_state = False
-        return True
     if stra != strb:
         if len(re.findall("vdisk\\.weibo\\.com", strb)) > 0:
             disp_item_insert(strb)
@@ -323,8 +364,7 @@ def disp_thr_saver():
     lastins = open("saved.log", "w", encoding="utf-8")
     lastprnt = ""
     for name in disp_arr_name:
-        if disp_arr_stat[name] != "":
-            lastprnt += name + "\n"
+        lastprnt += name + "\n"
     lastins.write(lastprnt)
     lastins.close()
     return True
@@ -346,7 +386,10 @@ def disp_thr_resolve():
         my_thr.start()
     return True
 
+mm_tm_begin = datetime.datetime.now()
+
 def my_mainloop():
+    global mm_tm_begin
     disp_thr_watcher()
     if opt_monitor_clipboard == True:
         disp_thr_clipmon()
@@ -355,6 +398,11 @@ def my_mainloop():
     disp_thr_resolve()
     disp_item_apply()
     gui.after(300, my_mainloop)
+    mm_tm_end = datetime.datetime.now()
+    mm_tm_delta = (mm_tm_end - mm_tm_begin).seconds
+    if mm_tm_delta > opt_retry_delay_second:
+        mm_tm_begin = mm_tm_end
+        disp_item_reset()
     return True
 
 """
@@ -385,12 +433,11 @@ for chr in last_dat:
     else:
         last_line += chr
 
+sig_mainstop = False
+
 gui = Tk()
 gui.after(300, my_mainloop)
 gui.title("vpan-gui")
-
-gui.rowconfigure(1,weight=1)
-gui.columnconfigure(2,weight=1)
 
 gui.rowconfigure(1,weight=1)
 gui.columnconfigure(2,weight=1)
@@ -430,6 +477,7 @@ def my_move_files():
 Button(gui,text='Clear completed',command = disp_item_clear).grid(row=0,column=0)
 Button(gui,text='Add address',command = my_add_addr).grid(row=0,column=1)
 Button(gui,text='Move completed files',command = my_move_files).grid(row=0,column=2)
+Button(gui,text='Reset erroneous',command = disp_item_reset).grid(row=0,column=3)
 
 tree_f=Frame(gui)
 tree_f.grid(row=1,column=0,columnspan=3,sticky='nswe')
@@ -451,4 +499,5 @@ tree.heading('trstat',text='Status')
 
 mainloop()
 
+sig_mainstop = True
 exit(0)
