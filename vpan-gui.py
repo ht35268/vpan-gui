@@ -70,13 +70,14 @@ def resolve_filename_conflict(name):
     return name
 
 def file_exist(path):
-    doSomething = True
-    try:
-        f1 = open(path, "rb")
-        f1.close()
-    except FileNotFoundError:
-        doSomething = False
-    return doSomething
+    # doSomething = True
+    # try:
+    #     f1 = open(path, "rb")
+    #     f1.close()
+    # except FileNotFoundError:
+    #     doSomething = False
+    # return doSomething
+    return os.path.isfile(path)
 
 def DownloadFile(url, web_path, tofile, origsize):
     try:
