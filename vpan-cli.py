@@ -1,15 +1,14 @@
+#coding=utf-8
 
 import os
 import re
 
-import http.client
 import urllib
 import urllib.request
 
 import time
 import datetime
 
-import sys
 import threading
 import os.path
 import win32clipboard
@@ -22,50 +21,32 @@ opt_sleep_interval = 1.0
 opt_refresh_function = "clear" # clear for linux and cls for windows
 
 def chomp(str_data_old):
-    str_data = "";
-    for i in str_data_old:
-        if i != '\n' and i != '\r':
-            str_data += i;
-    return str_data;
+    return str_data_old.replace('\r','').replace('\n','')
 
-def get_http_data(def_server, def_path):
-    conn = http.client.HTTPConnection(def_server)
-    conn.request("GET", def_path, headers = {"Cookie" : opt_cookie})
-    response = conn.getresponse()
-    str_data = response.read()  # This will return entire content.
-    return str_data
+
+def get_http_data(_, def_path):
+    return urllib.request.urlopen(
+        urllib.request.Request(def_path, headers = {"Cookie" : opt_cookie})
+    ).read()
 
 def get_http_data_by_link(def_path):
-    def_path = re.sub("http://", "", def_path)
-    def_server = re.sub("^(.*?)/.*$", "\\1", def_path)
-    def_path = re.sub("^.*?(/.*)$", "\\1", def_path)
-    return get_http_data(def_server, def_path)
+    if '://' not in def_path:
+        def_path='http://'+def_path
+    return get_http_data(None, def_path)
 
 def resolve_filename_conflict(name):
-    try:
-        fl = open(name, "rb")
-        fl.close()
-    except FileNotFoundError:
+    if not os.path.exists(name):
         return name
     for i in range(1, 1024):
-        nname = re.sub("(\\.[A-Za-z]*)$", " (" + str(i) + ")\\1", name)
-        try:
-            fl = open(nname, "rb")
-            fl.close()
-        except FileNotFoundError:
+        nname = re.sub("(\\.[A-Za-z]*)$", " ({0})\\1".format(str(i)), name)
+        if not os.path.exists(nname):
             return nname
     return name
 
 def DownloadFile(url, web_path, tofile, origsize):
     f = urllib.request.urlopen(url)
     # tofile = resolve_filename_conflict(tofile)
-    doSomething = False
-    try:
-        fl = open(tofile, "rb")
-        fl.close()
-    except FileNotFoundError:
-        doSomething = True
-    if (doSomething == False):
+    if os.path.exists(tofile):
         return True
     # No conflictions...
     real_tofile = tofile + ".downloading"
@@ -76,18 +57,17 @@ def DownloadFile(url, web_path, tofile, origsize):
     tm_begin = datetime.datetime.now()
     while True:
         s = f.read(1024*32)
-        if len(s) == 0:
-                break
+        if not s:
+             break
         outf.write(s)
         c += len(s)
         tm_end = datetime.datetime.now()
         tm_delta = tm_end - tm_begin
-        print_str = "Downloaded " + str(c / 1024 / 1024) + " M of " + origsize + " (" + str(int(c / 1024 / (tm_delta.seconds + 2))) + " kB/s)"
+        print_str = "Downloaded %s M of %s (%d kB/s)"%(c / 1024 / 1024, origsize,c / 1024 / (tm_delta.seconds + 2))
         disp_item_modify(web_path, print_str)
     # Renaming file
     outf.close()
-    curDir = os.getcwd()
-    for parent, dirnames, filenames in os.walk(curDir):
+    for parent, dirnames, filenames in os.walk('.'):
         for filename in filenames:
             if filename == real_tofile:
                 os.rename(os.path.join(parent, real_tofile), os.path.join(parent, tofile))
@@ -100,8 +80,7 @@ Core functions
 def vpan_get_file(web_path, html_data):
     down_path_list = re.findall("\"download_list\":\\[\"(.*?)\"", html_data)
     down_path_list.append("")
-    down_path = down_path_list[0]
-    down_path = re.sub("\\\\/", "/", down_path)
+    down_path = down_path_list[0].replace(r'\/','/')
     # Preparing to download...
     down_size_list = re.findall("<span class=\"btn_vdisk_size\">(.*?)</span>", html_data)
     down_size_list.append("Unknown size")
@@ -109,15 +88,14 @@ def vpan_get_file(web_path, html_data):
     DownloadFile(down_path, web_path, disp_arr_name[web_path], down_size)
     return True
 
-def vpan_get_dir(web_path, html_data):
+def vpan_get_dir(_, html_data):
     sub_list_1 = re.findall("href=\"(http://vdisk\\.weibo\\.com/s/.*?)\"", html_data)
     sub_list = []
     for name in sub_list_1:
-        found = False
         for name2 in sub_list:
             if name == name2:
-                found = True
-        if found == False:
+                break
+        else:
             sub_list.append(name)
     for name in sub_list:
         disp_item_insert(name)
@@ -125,10 +103,9 @@ def vpan_get_dir(web_path, html_data):
 
 def vpan_get_item(web_path):
     disp_item_modify(web_path, "Getting file headers...")
-    html_data = get_http_data_by_link(web_path)
-    html_data = html_data.decode("utf-8", "ignore")
+    html_data = get_http_data_by_link(web_path).decode("utf-8", "ignore")
     vpan_resolve_name(web_path, html_data)
-    if len(re.findall("在线预览", html_data)) > 0:
+    if re.findall("在线预览", html_data):
         vpan_get_file(web_path, html_data)
     else:
         vpan_get_dir(web_path, html_data)
@@ -137,11 +114,7 @@ def vpan_get_item(web_path):
 
 def vpan_resolve_name(web_path, html_data):
     nam_list = re.findall("<title>(.*?)</title>", html_data)
-    if len(nam_list) > 0:
-        nam = nam_list[0]
-        nam = re.sub("_微盘下载", "", nam)
-    else:
-        nam = "Unnamed"
+    nam = re.sub("_微盘下载", "", nam_list[0]) if nam_list else "Unnamed"
     global disp_arr_name
     disp_arr_name[web_path] = nam
     return True
@@ -165,7 +138,7 @@ def disp_item_modify(item_addr, item_prop):
 def disp_item_insert(item_addr):
     global disp_arr_stat
     global disp_arr_name
-    if disp_arr_name.__contains__(item_addr):
+    if item_addr in disp_arr_name:
         return True
     disp_arr_name[item_addr] = "Unknown name"
     disp_arr_stat[item_addr] = "Pending"
@@ -193,11 +166,10 @@ def disp_thr_func_post_view(list_of_names):
     global disp_arr_name
     for item_addr in list_of_names:
         item_name = disp_arr_name[item_addr]
-        item_stat = disp_arr_stat[item_addr]
-        if item_stat == "":
-            item_stat = "Completed!"
+        item_stat = disp_arr_stat[item_addr] or "Completed!"
         print(item_name, "\t", item_stat)
-    return True;
+    return True
+
 
 def disp_thr_view():
     global disp_arr_stat
@@ -206,25 +178,25 @@ def disp_thr_view():
     max_size = opt_max_list_count
     while True:
         os.system(opt_refresh_function)
-        if disp_thr_state == False:
+        if not disp_thr_state:
             break
         cur_size = 0
         disp_list = []
         for name in disp_arr_name:
             if cur_size >= max_size:
                 break
-            if disp_arr_stat[name] == "":
+            if not disp_arr_stat[name]:
                 continue
             cur_size += 1
             disp_list.append(name)
         for name in disp_arr_name:
             if cur_size >= max_size:
                 break
-            if disp_arr_stat[name] == "":
+            if not disp_arr_stat[name]:
                 cur_size += 1
                 disp_list.append(name)
-        print("Concurrent downloads: " + str(disp_thr_count))
-        print("---------------------------------------------")
+        print("Concurrent downloads:", disp_thr_count)
+        print("-"*45)
         disp_thr_func_post_view(disp_list)
         time.sleep(opt_sleep_interval)
     return True
@@ -239,19 +211,16 @@ def disp_thr_clipmon():
     global disp_thr_state
     global disp_arr_name
     global disp_arr_stat
-    stra = "";
-    strb = "";
-    while (True):
-        strb = getText()
-        strb.rstrip()
-        strb = strb.decode("utf-8", "ignore")
-        if (strb == "terminate"):
+    stra = ""
+    while True:
+        strb = getText().rstrip().decode("utf-8", "ignore")
+        if strb == "terminate":
             disp_thr_state = False
             break
         if strb == "clear":
             disp_item_clear()
         if stra != strb:
-            if len(re.findall("vdisk\\.weibo\\.com", strb)) > 0:
+            if re.findall("vdisk\\.weibo\\.com", strb):
                 disp_item_insert(strb)
         stra = strb
         time.sleep(opt_sleep_interval)
@@ -263,13 +232,12 @@ def disp_thr_watcher():
     max_thr_count = opt_max_thr_count
     my_thr_list = []
     while True:
-        if disp_thr_state == False:
+        if not disp_thr_state:
             break
         required_thr = max_thr_count - disp_thr_count
         for item_addr in disp_arr_name:
-            if (required_thr <= 0):
+            if required_thr <= 0:
                 break
-            item_name = disp_arr_name[item_addr]
             item_stat = disp_arr_stat[item_addr]
             if item_stat != "Pending":
                 continue
@@ -283,15 +251,10 @@ def disp_thr_watcher():
 
 def disp_func_begin():
     global disp_thr_state
-    thr_view = threading.Thread(target = disp_thr_view, args = [])
-    thr_clipmon = threading.Thread(target = disp_thr_clipmon, args = [])
-    thr_watcher = threading.Thread(target = disp_thr_watcher, args = [])
-    thr_view.start()
-    thr_clipmon.start()
-    thr_watcher.start()
-    while True:
-        if disp_thr_state == False:
-            break
+    threading.Thread(target = disp_thr_view).start()
+    threading.Thread(target = disp_thr_clipmon).start()
+    threading.Thread(target = disp_thr_watcher).start()
+    while disp_thr_state:
         time.sleep(opt_sleep_interval)
     return True
 
