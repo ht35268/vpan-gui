@@ -6,9 +6,7 @@ import shutil
 import http.client
 import urllib
 import urllib.request
-
 import socket
-socket.setdefaulttimeout(6)
 
 import time
 import datetime
@@ -21,13 +19,16 @@ import os.path
 
 opt_cookie = ""
 opt_max_thr_count = 10
-opt_max_thr_view_count = 96
-opt_retry_delay_second = 10
+opt_max_thr_view_count = 16
+opt_retry_delay_second = 60
+opt_timeout_second = 10
 opt_monitor_clipboard = False
 
 """
 Trivial functions
 """
+
+socket.setdefaulttimeout(opt_timeout_second)
 
 def chomp(str_data_old):
     str_data = "";
@@ -49,10 +50,14 @@ def get_http_data(def_server, def_path):
     return str_data
 
 def get_http_data_by_link(def_path):
+    global vpres_httpdata
+    if def_path in vpres_httpdata:
+        return vpres_httpdata[def_path]
     def_path = re.sub("http://", "", def_path)
     def_server = re.sub("^(.*?)/.*$", "\\1", def_path)
     def_path = re.sub("^.*?(/.*)$", "\\1", def_path)
-    return get_http_data(def_server, def_path)
+    vpres_httpdata[def_path] = get_http_data(def_server, def_path)
+    return vpres_httpdata[def_path]
 
 def resolve_filename_conflict(name):
     try:
@@ -70,14 +75,15 @@ def resolve_filename_conflict(name):
     return name
 
 def file_exist(path):
-    # doSomething = True
-    # try:
-    #     f1 = open(path, "rb")
-    #     f1.close()
-    # except FileNotFoundError:
-    #     doSomething = False
-    # return doSomething
     return os.path.isfile(path)
+
+def make_file(path):
+    nam_list = re.findall("^(.*)/", path)
+    path = nam_list[0] if nam_list else ""
+    if path != "":
+        if not os.path.exists(path):
+            os.makedirs(path)
+    return True
 
 def DownloadFile(url, web_path, tofile, origsize):
     try:
@@ -90,6 +96,7 @@ def DownloadFile(url, web_path, tofile, origsize):
         return True
     # No conflictions...
     real_tofile = tofile + ".downloading"
+    make_file(real_tofile)
     outf = open(real_tofile, 'wb')
     c = 0
     print_str = "Downloading..."
@@ -112,11 +119,13 @@ def DownloadFile(url, web_path, tofile, origsize):
         disp_item_modify(web_path, print_str)
     # Renaming file
     outf.close()
+    singular_real_tofile = re.sub("^.*/", "", real_tofile)
+    singular_tofile = re.sub("^.*/", "", tofile)
     curDir = os.getcwd()
     for parent, dirnames, filenames in os.walk(curDir):
         for filename in filenames:
-            if filename == real_tofile:
-                os.rename(os.path.join(parent, real_tofile), os.path.join(parent, tofile))
+            if filename == singular_real_tofile:
+                os.rename(os.path.join(parent, singular_real_tofile), os.path.join(parent, singular_tofile))
     return True
 
 """
@@ -136,7 +145,8 @@ def vpan_get_file(web_path, html_data):
     return True
 
 def vpan_get_dir(web_path, html_data):
-    n_data = re.sub("^(.*?)<tbody.*?>(.*?)</tbody>(.*)$", "\\2", html_data)
+    n_data_list = re.findall("<tbody.*?>(.*?)</tbody>", chomp(html_data))
+    n_data = n_data_list[0] if n_data_list else ""
     sub_list_1 = re.findall("href=\"(http://vdisk\\.weibo\\.com/s/.*?)\"", n_data)
     sub_list = []
     for name in sub_list_1:
@@ -179,19 +189,48 @@ def vpan_get_item(web_path):
     disp_item_remove(web_path)
     return True
 
-def vpan_resolve_name(web_path, html_data):
+vpres_httpdata = {}
+
+def vpan_get_resolved_name(html_data):
     nam_list = re.findall("<title>(.*?)</title>", html_data)
-    if len(nam_list) > 0:
-        nam = nam_list[0]
-        nam = re.sub("_微盘下载", "", nam)
-    else:
-        nam = "Unnamed"
+    nam = re.sub("_微盘下载", "", nam_list[0]) if nam_list else "Unnamed"
+    parent_data = html_data
+    while True:
+        par_list_1 = re.findall('<div class="page_down_filename">(.*?)</div>', parent_data)
+        par_str = par_list_1[0] if par_list_1 else ""
+        par_list_2 = re.findall('<div class="detail_folder_path">(.*?)</div>', parent_data)
+        par_str_2 = par_list_2[0] if par_list_2 else ""
+        par_str += par_str_2
+        par_list_3 = re.findall('<a href="(.*?)"', par_str)
+        par_link = par_list_3[len(par_list_3) - 1] if par_list_3 else ""
+        if par_link == "":
+            break
+        # Searched for its predecessor...
+        global vpres_httpdata
+        try:
+            parent_data = get_http_data_by_link(par_link)
+        except RuntimeError:
+            break
+        parent_data = parent_data.decode("utf-8", "ignore")
+        apnd_list = re.findall("<title>(.*?)</title>", parent_data)
+        apnd = apnd_list[0] if apnd_list else ""
+        apnd = re.sub("_微盘下载", "", apnd)
+        if apnd == "":
+            break
+        # Appending string to name
+        nam = apnd + "/" + nam
+        continue
+    return nam
+
+def vpan_resolve_name(web_path, html_data):
+    nam = vpan_get_resolved_name(html_data)
     global disp_arr_name
     disp_arr_name[web_path] = nam
     return True
 
 def vpan_resolve_name_force(web_path):
     global disp_thr_view_count
+    disp_item_modify(web_path, "Resolving filename...")
     try:
         html_data = get_http_data_by_link(web_path)
     except RuntimeError:
@@ -204,6 +243,7 @@ def vpan_resolve_name_force(web_path):
     if file_exist(disp_arr_name[web_path]):
         disp_arr_stat[web_path] = ""
     disp_thr_view_count -= 1
+    disp_item_modify(web_path, "Pending")
     return True
 
 """
@@ -228,7 +268,7 @@ def disp_item_modify(item_addr, item_prop):
 def disp_item_insert_pend(item_addr):
     global disp_arr_stat
     global disp_arr_name
-    if disp_arr_name.__contains__(item_addr):
+    if item_addr in disp_arr_name:
         return True
     disp_arr_name[item_addr] = "Unknown name"
     disp_arr_stat[item_addr] = "Pending"
@@ -252,10 +292,12 @@ def disp_item_clear():
     global disp_list_add
     global disp_list_remove
     global disp_thr_count
+    global vpres_httpdata
     try:
         for name in disp_arr_name:
             if disp_arr_stat[name] == "":
                 disp_list_remove.append(name)
+        vpres_httpdata.clear()
     except KeyError:
         return True
     return True
@@ -379,7 +421,9 @@ def disp_thr_resolve():
             return True
         item_name = disp_arr_name[item_addr]
         item_stat = disp_arr_stat[item_addr]
-        if item_name != "Unknown name" and item_stat != "Getting file headers...":
+        if item_stat != "Pending":
+            continue
+        if item_name != "Unknown name":
             continue
         required_thr -= 1
         disp_thr_view_count += 1
