@@ -173,7 +173,7 @@ def vpan_get_item(web_path):
     isDir = True
     if len(re.findall("在线预览", html_data)) > 0:
         isDir = False
-    if len(re.findall("\\.([Rr][Aa][Rr]|[Zz][Ii][Pp])$", disp_arr_name[web_path])) > 0:
+    if len(re.findall("\\.([A-Za-z0-9]*)$", disp_arr_name[web_path])) > 0:
         isDir = False
     if len(re.findall("vd_browser_music", html_data)) > 0:
         isDir = False
