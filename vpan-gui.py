@@ -14,15 +14,17 @@ import datetime
 import sys
 import threading
 import os.path
+
 # import win32clipboard
 # import win32con
 
 opt_cookie = ""
-opt_max_thr_count = 10
-opt_max_thr_view_count = 16
+opt_max_thr_count = 8
+opt_max_thr_view_count = 12
 opt_retry_delay_second = 60
-opt_timeout_second = 10
+opt_timeout_second = 25
 opt_monitor_clipboard = False
+opt_download_directory = "./Downloading/"
 
 """
 Trivial functions
@@ -50,14 +52,10 @@ def get_http_data(def_server, def_path):
     return str_data
 
 def get_http_data_by_link(def_path):
-    global vpres_httpdata
-    if def_path in vpres_httpdata:
-        return vpres_httpdata[def_path]
     def_path = re.sub("http://", "", def_path)
     def_server = re.sub("^(.*?)/.*$", "\\1", def_path)
     def_path = re.sub("^.*?(/.*)$", "\\1", def_path)
-    vpres_httpdata[def_path] = get_http_data(def_server, def_path)
-    return vpres_httpdata[def_path]
+    return get_http_data(def_server, def_path)
 
 def resolve_filename_conflict(name):
     try:
@@ -75,7 +73,16 @@ def resolve_filename_conflict(name):
     return name
 
 def file_exist(path):
-    return os.path.isfile(path)
+    if os.path.isfile(opt_download_directory + path):
+        return True
+    # nam_list = re.findall("^(.*)/", path)
+    # nam = nam_list[0] if nam_list else ""
+    # for parent, dirnames, filenames in os.walk(opt_download_directory):
+    #     for filename in filenames:
+    #         if filename == nam:
+    #             shutil.copyfile(os.path.join(parent, filename), opt_download_directory + path)
+    #             return True
+    return False
 
 def make_file(path):
     nam_list = re.findall("^(.*)/", path)
@@ -90,14 +97,12 @@ def DownloadFile(url, web_path, tofile, origsize):
         f = urllib.request.urlopen(url)
     except socket.timeout:
         raise RuntimeError
-    # tofile = resolve_filename_conflict(tofile)
-    doSomething = False
     if file_exist(tofile):
         return True
     # No conflictions...
     real_tofile = tofile + ".downloading"
-    make_file(real_tofile)
-    outf = open(real_tofile, 'wb')
+    make_file(opt_download_directory + real_tofile)
+    outf = open(opt_download_directory + real_tofile, 'wb')
     c = 0
     print_str = "Downloading..."
     disp_item_modify(web_path, print_str)
@@ -121,11 +126,10 @@ def DownloadFile(url, web_path, tofile, origsize):
     outf.close()
     singular_real_tofile = re.sub("^.*/", "", real_tofile)
     singular_tofile = re.sub("^.*/", "", tofile)
-    curDir = os.getcwd()
-    for parent, dirnames, filenames in os.walk(curDir):
-        for filename in filenames:
-            if filename == singular_real_tofile:
-                os.rename(os.path.join(parent, singular_real_tofile), os.path.join(parent, singular_tofile))
+    try:
+        os.rename(opt_download_directory + real_tofile, opt_download_directory + tofile)
+    except FileExistsError:
+        return True
     return True
 
 """
@@ -141,7 +145,10 @@ def vpan_get_file(web_path, html_data):
     down_size_list = re.findall("<span class=\"btn_vdisk_size\">(.*?)</span>", html_data)
     down_size_list.append("Unknown size")
     down_size = down_size_list[0]
-    DownloadFile(down_path, web_path, disp_arr_name[web_path], down_size)
+    if len(down_path) < 3:
+        return vpan_get_dir(web_path, html_data)
+    else:
+        DownloadFile(down_path, web_path, disp_arr_name[web_path], down_size)
     return True
 
 def vpan_get_dir(web_path, html_data):
@@ -171,17 +178,15 @@ def vpan_get_item(web_path):
     html_data = html_data.decode("utf-8", "ignore")
     vpan_resolve_name(web_path, html_data)
     isDir = True
-    if len(re.findall("在线预览", html_data)) > 0:
-        isDir = False
-    if len(re.findall("\\.([A-Za-z0-9]*)$", disp_arr_name[web_path])) > 0:
-        isDir = False
-    if len(re.findall("vd_browser_music", html_data)) > 0:
+    if re.findall("<tbody.*?>(.*?)</tbody>", chomp(html_data)) and not re.findall("\\.(rar|Rar|RAR|zip|Zip|ZIP)", disp_arr_name[web_path]):
+        isDir = True
+    else:
         isDir = False
     try:
-        if isDir:
-            vpan_get_dir(web_path, html_data)
-        else:
+        if not isDir:
             vpan_get_file(web_path, html_data)
+        else:
+            vpan_get_dir(web_path, html_data)
     except RuntimeError:
         disp_item_remove(web_path)
         disp_item_modify(web_path, "Connection lost.")
@@ -189,41 +194,42 @@ def vpan_get_item(web_path):
     disp_item_remove(web_path)
     return True
 
-vpres_httpdata = {}
+vpres_names = {}
 
-def vpan_get_resolved_name(html_data):
+def vpan_get_resolved_name(web_path, html_data):
+    global vpres_names
+    actual_path = re.sub("\\?(.*)$", "", web_path)
+    if actual_path in vpres_names:
+        return vpres_names[actual_path]
     nam_list = re.findall("<title>(.*?)</title>", html_data)
     nam = re.sub("_微盘下载", "", nam_list[0]) if nam_list else "Unnamed"
-    parent_data = html_data
-    while True:
-        par_list_1 = re.findall('<div class="page_down_filename">(.*?)</div>', parent_data)
-        par_str = par_list_1[0] if par_list_1 else ""
-        par_list_2 = re.findall('<div class="detail_folder_path">(.*?)</div>', parent_data)
-        par_str_2 = par_list_2[0] if par_list_2 else ""
-        par_str += par_str_2
-        par_list_3 = re.findall('<a href="(.*?)"', par_str)
-        par_link = par_list_3[len(par_list_3) - 1] if par_list_3 else ""
-        if par_link == "":
-            break
-        # Searched for its predecessor...
-        global vpres_httpdata
-        try:
-            parent_data = get_http_data_by_link(par_link)
-        except RuntimeError:
-            break
-        parent_data = parent_data.decode("utf-8", "ignore")
-        apnd_list = re.findall("<title>(.*?)</title>", parent_data)
-        apnd = apnd_list[0] if apnd_list else ""
-        apnd = re.sub("_微盘下载", "", apnd)
-        if apnd == "":
-            break
-        # Appending string to name
-        nam = apnd + "/" + nam
-        continue
+    print(actual_path, nam)
+    # Getting hierarchy recursively
+    par_link_1 = re.findall("parents_ref=(.*)$", web_path)
+    par_link_2 = par_link_1[0] if par_link_1 else ""
+    par_link_3 = re.sub(".*,", "", par_link_2)
+    if par_link_3 == "":
+        vpres_names[actual_path] = nam
+        return nam
+    par_link = re.sub("s/.*?\\?", "s/" + par_link_3 + "?", web_path)
+    if re.findall("parents_ref=.*,", par_link):
+        par_link = re.sub("(parents_ref=.*),.*?$", "\\1", par_link)
+    else:
+        par_link = re.sub("parents_ref=.*$", "", par_link)
+    # Getting data and redirecting to higher hierarchy
+    try:
+        html_data = get_http_data_by_link(par_link)
+    except RuntimeError:
+        vpres_names[actual_path] = nam
+        return nam
+    html_data = html_data.decode("utf-8", "ignore")
+    par_name = vpan_get_resolved_name(par_link, html_data)
+    nam = par_name + "/" + nam if par_name != "" else nam
+    vpres_names[web_path] = nam
     return nam
 
 def vpan_resolve_name(web_path, html_data):
-    nam = vpan_get_resolved_name(html_data)
+    nam = vpan_get_resolved_name(web_path, html_data)
     global disp_arr_name
     disp_arr_name[web_path] = nam
     return True
@@ -292,12 +298,10 @@ def disp_item_clear():
     global disp_list_add
     global disp_list_remove
     global disp_thr_count
-    global vpres_httpdata
     try:
         for name in disp_arr_name:
             if disp_arr_stat[name] == "":
                 disp_list_remove.append(name)
-        vpres_httpdata.clear()
     except KeyError:
         return True
     return True
@@ -343,29 +347,49 @@ def disp_item_apply():
     disp_list_remove.clear()
     return True
 
+disp_thr_view_time_count = 0
+
 def disp_thr_view():
     global disp_thr_state
+    global disp_thr_view_time_count
     global tree
-    my_disp_arr_name = disp_arr_name
-    my_disp_arr_stat = disp_arr_stat
+    disp_thr_view_time_count += 1
+    if disp_thr_view_time_count % 5 != 0:
+        return True
+    my_disp_arr_name = list()
+    for i in disp_arr_name:
+        my_disp_arr_name.append(i)
     my_arr = list()
+    my_disp_arr_name.sort()
+    indexer = ["ownload", "header", "name", "lost", "ending"]
+    for idxer in indexer:
+        for name in my_disp_arr_name:
+            if re.findall(idxer, disp_arr_stat[name]):
+                my_arr.append(name)
     for name in my_disp_arr_name:
+        found = False
+        if re.findall("(ownload|header|name|lost|ending)", disp_arr_stat[name]):
+            found = True
+        if found:
+            continue
         my_arr.append(name)
-    my_arr.sort()
     tree.delete(*tree.get_children())
     for item_addr in my_arr:
-        item_name = my_disp_arr_name[item_addr]
-        item_stat = my_disp_arr_stat[item_addr]
+        item_name = disp_arr_name[item_addr]
+        item_stat = disp_arr_stat[item_addr]
         if item_stat == "":
             item_stat = "Completed!"
         tree.insert('','end',text = item_name,values = (item_addr, item_stat))
     return True
 
 def getText():
-    win32clipboard.OpenClipboard()
-    d = win32clipboard.GetClipboardData(win32con.CF_TEXT)
-    win32clipboard.CloseClipboard()
-    return d
+    try:
+        win32clipboard.OpenClipboard()
+        d = win32clipboard.GetClipboardData(win32con.CF_TEXT)
+        win32clipboard.CloseClipboard()
+    except TypeError:
+        return ""
+    return d.rstrip().decode("utf-8", "ignore")
 
 stra = "";
 strb = "";
@@ -375,8 +399,6 @@ def disp_thr_clipmon():
     global stra
     global strb
     strb = getText()
-    strb.rstrip()
-    strb = strb.decode("utf-8", "ignore")
     if stra != strb:
         if len(re.findall("vdisk\\.weibo\\.com", strb)) > 0:
             disp_item_insert(strb)
@@ -465,6 +487,7 @@ Inserting data
 try:
     lastins = open("saved.log", "r", encoding="utf-8")
     last_dat = lastins.read()
+    # last_dat = ""
     lastins.close()
 except FileNotFoundError:
     last_dat = ""
